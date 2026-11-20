@@ -234,8 +234,9 @@ fn ensure_mesen_initialized() {
         // Atenção: no MesenCE `noVideo` controla o áudio e `noAudio` controla
         // o renderer (flags trocadas em EmuApiWrapper.cpp). Por isso ambos
         // devem ser `false` para o som funcionar.
-        let handle = std::ptr::NonNull::<u8>::dangling().as_ptr().cast::<c_void>();
-        eprintln!("[ensure_mesen_initialized] InitializeEmu(softwareRenderer=true, noAudio=false, noVideo=false, noInput=true)");
+        let handle = std::ptr::NonNull::<u8>::dangling()
+            .as_ptr()
+            .cast::<c_void>();
         unsafe {
             InitializeEmu(home.as_ptr(), handle, handle, true, false, false, true);
             InitDll();
@@ -333,13 +334,6 @@ fn mesen_init_rom(
     initialize_debugger();
     set_input_overrides(0, empty_pad_state());
     set_input_overrides(1, empty_pad_state());
-
-    let running = if is_shutting_down() {
-        false
-    } else {
-        unsafe { IsRunning() }
-    };
-    eprintln!("[mesen_init_rom] loaded={loaded} running={running}");
 
     // Não chamar `GetBaseScreenSize()` aqui: ele entra em
     // `VideoDecoder::GetBaseFrameInfo()`, que usando `_emu`/`_videoFilter`
@@ -580,9 +574,7 @@ pub fn run() {
                 _ => None,
             };
             if let Some(event_name) = event_name {
-                if let Err(error) = app.emit(event_name, ()) {
-                    eprintln!("Failed to dispatch menu event {event_name}: {error}");
-                }
+                let _ = app.emit(event_name, ());
             }
         });
 
