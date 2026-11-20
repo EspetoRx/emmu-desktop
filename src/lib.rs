@@ -1,17 +1,18 @@
 /** emmu/platforms/desktop/src/lib.rs */
 use emmu_mesen_sys::{
-    DebugControllerState, GetBaseScreenSize, InitDll, InitializeEmu, IsRunning, LoadRom,
-    NOTIFICATION_PPU_FRAME_DONE, RegisterNotificationCallback, Release, Stop,
-    UnregisterNotificationCallback, configure_audio, connect_nes_controllers, initialize_debugger,
-    is_shutting_down, load_state_from_file, mark_shutting_down, save_state_to_file,
-    set_audio_volume, set_input_overrides,
+    DebugControllerState, InitDll, InitializeEmu, IsRunning, LoadRom, NOTIFICATION_PPU_FRAME_DONE,
+    NOTIFICATION_REFRESH_SOFTWARE_RENDERER, RegisterNotificationCallback, Release,
+    SoftwareRendererFrameAbi, Stop, UnregisterNotificationCallback, configure_audio,
+    connect_nes_controllers, connect_snes_controllers, initialize_debugger, is_shutting_down,
+    load_state_from_file, mark_shutting_down, save_state_to_file, set_audio_volume,
+    set_input_overrides,
 };
 use serde::Serialize;
 use std::ffi::CString;
 use std::fs;
 use std::os::raw::{c_int, c_void};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, Once};
 use tauri::State;
 #[cfg(desktop)]
@@ -21,7 +22,9 @@ use tauri::{
 };
 
 const NES_WIDTH: usize = 256;
-const DEFAULT_NES_HEIGHT: usize = 239;
+/// Tamanho real do buffer do PPU NES (`NesConstants::ScreenPixelCount`).
+const NES_FRAME_HEIGHT: usize = 240;
+const SNES_FRAME_HEIGHT: usize = 224;
 
 const NES_PALETTE_64: [u32; 64] = [
     0x00545454, 0x00001E74, 0x00081090, 0x00300088, 0x00440064, 0x005C0030, 0x00540400, 0x003C1800,
@@ -44,7 +47,7 @@ struct MesenFrameBuffer {
 static LATEST_MESEN_FRAME: Mutex<MesenFrameBuffer> = Mutex::new(MesenFrameBuffer {
     rgba: Vec::new(),
     width: NES_WIDTH as u32,
-    height: DEFAULT_NES_HEIGHT as u32,
+    height: NES_FRAME_HEIGHT as u32,
     has_frame: false,
 });
 
@@ -72,6 +75,9 @@ static ACTIVE_CONTROLLERS: Mutex<[DebugControllerState; 2]> =
 
 static MESEN_INIT_ONCE: Once = Once::new();
 static MESEN_LISTENER: Mutex<usize> = Mutex::new(0);
+/// Garante que `Release()` rode uma única vez, mesmo se o evento de saída do
+/// Tauri e o comando `mesen_release` do JS chegarem no mesmo instante.
+static MESEN_RELEASED: AtomicBool = AtomicBool::new(false);
 
 /// Dimensões do frame capturadas no carregamento da ROM. O callback de
 /// notificação não pode chamar `GetBaseScreenSize()` (FFI): durante o
@@ -79,6 +85,10 @@ static MESEN_LISTENER: Mutex<usize> = Mutex::new(0);
 /// causa EXC_BAD_ACCESS em `VideoDecoder::GetBaseFrameInfo`.
 static MESEN_FRAME_WIDTH: AtomicU32 = AtomicU32::new(NES_WIDTH as u32);
 static MESEN_FRAME_HEIGHT: AtomicU32 = AtomicU32::new(240);
+/// NES publica o frame no `PpuFrameDone`; SNES não passa buffer nessa
+/// notificação e usa o `RefreshSoftwareRenderer`. O flag evita ler o parâmetro
+/// da notificação 7 como se fosse um buffer de paleta quando o console é SNES.
+static ACTIVE_CONSOLE_IS_NES: AtomicBool = AtomicBool::new(true);
 
 fn unregister_mesen_listener_if_any() {
     if let Ok(mut guard) = MESEN_LISTENER.lock() {
@@ -90,11 +100,52 @@ fn unregister_mesen_listener_if_any() {
     }
 }
 
-extern "C" fn on_mesen_ppu_frame(notification_type: c_int, param: *mut c_void) {
-    if is_shutting_down() || notification_type != NOTIFICATION_PPU_FRAME_DONE || param.is_null() {
+extern "C" fn on_mesen_notification(notification_type: c_int, param: *mut c_void) {
+    if is_shutting_down() || param.is_null() {
         return;
     }
 
+    if notification_type == NOTIFICATION_REFRESH_SOFTWARE_RENDERER {
+        // SNES: o SoftwareRenderer manda um frame ARGB já convertido.
+        let frame = unsafe { &*(param as *const SoftwareRendererFrameAbi) };
+        let surface = &frame.frame;
+        if surface.buffer.is_null() || surface.width == 0 || surface.height == 0 {
+            return;
+        }
+        let w = surface.width as usize;
+        let h = surface.height as usize;
+        let pixel_count = w.saturating_mul(h);
+        if pixel_count == 0 {
+            return;
+        }
+        let src = unsafe { std::slice::from_raw_parts(surface.buffer, pixel_count) };
+
+        if let Ok(mut guard) = LATEST_MESEN_FRAME.try_lock() {
+            let needed_bytes = pixel_count * 4;
+            if guard.rgba.len() != needed_bytes {
+                guard.rgba.resize(needed_bytes, 0);
+            }
+            for (i, &argb) in src.iter().enumerate() {
+                let base = i * 4;
+                guard.rgba[base] = ((argb >> 16) & 0xFF) as u8;
+                guard.rgba[base + 1] = ((argb >> 8) & 0xFF) as u8;
+                guard.rgba[base + 2] = (argb & 0xFF) as u8;
+                guard.rgba[base + 3] = 0xFF;
+            }
+            guard.width = w as u32;
+            guard.height = h as u32;
+            guard.has_frame = true;
+        }
+        return;
+    }
+
+    if notification_type != NOTIFICATION_PPU_FRAME_DONE
+        || !ACTIVE_CONSOLE_IS_NES.load(Ordering::Relaxed)
+    {
+        return;
+    }
+
+    // NES: o PpuFrameDone passa um buffer de índices de paleta de 16 bits.
     let w = MESEN_FRAME_WIDTH.load(Ordering::Relaxed) as usize;
     let h = MESEN_FRAME_HEIGHT.load(Ordering::Relaxed) as usize;
     if w == 0 || h == 0 {
@@ -189,7 +240,7 @@ fn ensure_mesen_initialized() {
             InitializeEmu(home.as_ptr(), handle, handle, true, false, false, true);
             InitDll();
             configure_audio();
-            let listener = RegisterNotificationCallback(Some(on_mesen_ppu_frame));
+            let listener = RegisterNotificationCallback(Some(on_mesen_notification));
             if let Ok(mut guard) = MESEN_LISTENER.lock() {
                 *guard = listener as usize;
             }
@@ -220,6 +271,7 @@ fn apply_button_to_state(pad: &mut DebugControllerState, button: &str, pressed: 
 #[tauri::command]
 fn mesen_init_rom(
     rom_bytes: Vec<u8>,
+    console: Option<String>,
     state: State<'_, MesenDesktopState>,
 ) -> Result<MesenInitResult, String> {
     if is_shutting_down() {
@@ -228,6 +280,12 @@ fn mesen_init_rom(
     if rom_bytes.is_empty() {
         return Err("ROM vazia.".into());
     }
+
+    let is_nes = console
+        .as_deref()
+        .unwrap_or("NES")
+        .eq_ignore_ascii_case("NES");
+    ACTIVE_CONSOLE_IS_NES.store(is_nes, Ordering::Relaxed);
 
     ensure_mesen_initialized();
 
@@ -240,7 +298,10 @@ fn mesen_init_rom(
         pads[1] = empty_pad_state();
     }
 
-    let rom_file = std::env::temp_dir().join(format!("emmu_mesen_rom_{}.nes", std::process::id()));
+    // O Mesen detecta o console pela extensão; .sfc/.smc/.fig para SNES.
+    let extension = if is_nes { "nes" } else { "sfc" };
+    let rom_file =
+        std::env::temp_dir().join(format!("emmu_mesen_rom_{}.{extension}", std::process::id()));
     fs::write(&rom_file, &rom_bytes).map_err(|e| format!("Falha ao gravar ROM temporária: {e}"))?;
 
     if let Ok(mut guard) = state.temp_rom_path.lock() {
@@ -254,13 +315,18 @@ fn mesen_init_rom(
         return Err("Aplicação em processo de encerramento.".into());
     }
 
-    // Cada ROM começa com controles padrão; jogos com dispositivo especial
-    // (zapper, etc.) são reconfigurados automaticamente pelo Mesen ao carregar.
-    connect_nes_controllers();
+    // P1 e P2 sempre conectados. A preferência do Player é aplicada no JS
+    // (teclas P2 ignoradas quando desabilitado), sem mexer na config do Mesen
+    // em runtime — o que exigiria reconstruir os control devices.
+    if is_nes {
+        connect_nes_controllers();
+    } else {
+        connect_snes_controllers();
+    }
 
     let loaded = unsafe { LoadRom(rom_cstr.as_ptr().cast_mut(), std::ptr::null_mut()) };
     if !loaded {
-        return Err("Mesen falhou ao carregar a ROM NES.".into());
+        return Err("Mesen falhou ao carregar a ROM.".into());
     }
 
     // O override de controle do Mesen só é aplicado quando o debugger existe.
@@ -275,30 +341,22 @@ fn mesen_init_rom(
     };
     eprintln!("[mesen_init_rom] loaded={loaded} running={running}");
 
-    let base_size = if is_shutting_down() {
-        emmu_mesen_sys::FrameInfo {
-            width: NES_WIDTH as u32,
-            height: DEFAULT_NES_HEIGHT as u32,
-        }
+    // Não chamar `GetBaseScreenSize()` aqui: ele entra em
+    // `VideoDecoder::GetBaseFrameInfo()`, que usando `_emu`/`_videoFilter`
+    // já liberados no shutdown causa EXC_BAD_ACCESS. As dimensões são fixas
+    // e o callback de notificação já publica o tamanho real de cada frame.
+    let height = if is_nes {
+        NES_FRAME_HEIGHT
     } else {
-        unsafe { GetBaseScreenSize() }
+        SNES_FRAME_HEIGHT
     };
+    MESEN_FRAME_WIDTH.store(NES_WIDTH as u32, Ordering::Relaxed);
+    MESEN_FRAME_HEIGHT.store(height as u32, Ordering::Relaxed);
 
-    let width = if base_size.width > 0 {
-        base_size.width
-    } else {
-        NES_WIDTH as u32
-    };
-    let height = if base_size.height > 0 {
-        base_size.height
-    } else {
-        DEFAULT_NES_HEIGHT as u32
-    };
-
-    MESEN_FRAME_WIDTH.store(width, Ordering::Relaxed);
-    MESEN_FRAME_HEIGHT.store(height, Ordering::Relaxed);
-
-    Ok(MesenInitResult { width, height })
+    Ok(MesenInitResult {
+        width: NES_WIDTH as u32,
+        height: height as u32,
+    })
 }
 
 #[tauri::command]
@@ -369,8 +427,10 @@ fn mesen_stop() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn mesen_release() -> Result<(), String> {
+fn release_mesen_once() {
+    if MESEN_RELEASED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     if !is_shutting_down() {
         set_input_overrides(0, empty_pad_state());
         set_input_overrides(1, empty_pad_state());
@@ -392,7 +452,11 @@ fn mesen_release() -> Result<(), String> {
         }
         Release();
     }
+}
 
+#[tauri::command]
+fn mesen_release() -> Result<(), String> {
+    release_mesen_once();
     Ok(())
 }
 
@@ -429,6 +493,23 @@ fn mesen_load_state(state: Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
+/// "Desconectar" o P2 no Player: limpa os overrides para que nenhum botão
+/// fique preso. A porta continua conectada no Mesen para que reabilitar o P2
+/// funcione imediatamente, sem recarregar a ROM.
+#[tauri::command]
+fn mesen_set_p2_enabled(enabled: bool) -> Result<(), String> {
+    if enabled {
+        return Ok(());
+    }
+    if let Ok(mut pads) = ACTIVE_CONTROLLERS.lock() {
+        pads[1] = empty_pad_state();
+    }
+    if !is_shutting_down() {
+        set_input_overrides(1, empty_pad_state());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn mesen_set_volume(volume: u32) -> Result<(), String> {
     set_audio_volume(volume);
@@ -448,6 +529,7 @@ pub fn run() {
             mesen_save_state,
             mesen_load_state,
             mesen_set_volume,
+            mesen_set_p2_enabled,
         ]);
 
     #[cfg(desktop)]
@@ -513,8 +595,10 @@ pub fn run() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
-            mark_shutting_down();
-            unregister_mesen_listener_if_any();
+            // O JS pode não ter tempo de chamar `mesen_release` quando a
+            // janela fecha. Encerra o Mesen aqui para impedir que a thread de
+            // render acesse o VideoDecoder já destruído (EXC_BAD_ACCESS).
+            release_mesen_once();
         }
     });
 }
