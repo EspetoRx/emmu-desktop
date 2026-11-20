@@ -3,9 +3,9 @@ use emmu_mesen_sys::{
     DebugControllerState, InitDll, InitializeEmu, IsRunning, LoadRom, NOTIFICATION_PPU_FRAME_DONE,
     NOTIFICATION_REFRESH_SOFTWARE_RENDERER, RegisterNotificationCallback, Release,
     SoftwareRendererFrameAbi, Stop, UnregisterNotificationCallback, configure_audio,
-    connect_nes_controllers, connect_snes_controllers, initialize_debugger, is_shutting_down,
-    load_state_from_file, mark_shutting_down, save_state_to_file, set_audio_volume,
-    set_input_overrides,
+    connect_gba_controllers, connect_nes_controllers, connect_snes_controllers,
+    initialize_debugger, install_gba_bios, is_shutting_down, load_state_from_file,
+    mark_shutting_down, reset, save_state_to_file, set_audio_volume, set_input_overrides,
 };
 use serde::Serialize;
 use std::ffi::CString;
@@ -25,6 +25,8 @@ const NES_WIDTH: usize = 256;
 /// Tamanho real do buffer do PPU NES (`NesConstants::ScreenPixelCount`).
 const NES_FRAME_HEIGHT: usize = 240;
 const SNES_FRAME_HEIGHT: usize = 224;
+const GBA_WIDTH: usize = 240;
+const GBA_FRAME_HEIGHT: usize = 160;
 
 const NES_PALETTE_64: [u32; 64] = [
     0x00545454, 0x00001E74, 0x00081090, 0x00300088, 0x00440064, 0x005C0030, 0x00540400, 0x003C1800,
@@ -239,6 +241,11 @@ fn ensure_mesen_initialized() {
             .cast::<c_void>();
         unsafe {
             InitializeEmu(home.as_ptr(), handle, handle, true, false, false, true);
+        }
+        // O Mesen lê `gba_bios.bin` durante `LoadRom`; sem ele os jogos ficam
+        // presos no vetor de SWI e a tela permanece branca.
+        let _ = install_gba_bios(home.to_str().unwrap_or("/tmp/mesen_home"));
+        unsafe {
             InitDll();
             configure_audio();
             let listener = RegisterNotificationCallback(Some(on_mesen_notification));
@@ -282,10 +289,9 @@ fn mesen_init_rom(
         return Err("ROM vazia.".into());
     }
 
-    let is_nes = console
-        .as_deref()
-        .unwrap_or("NES")
-        .eq_ignore_ascii_case("NES");
+    let console_name = console.as_deref().unwrap_or("NES");
+    let is_nes = console_name.eq_ignore_ascii_case("NES");
+    let is_gba = console_name.eq_ignore_ascii_case("GBA");
     ACTIVE_CONSOLE_IS_NES.store(is_nes, Ordering::Relaxed);
 
     ensure_mesen_initialized();
@@ -299,8 +305,14 @@ fn mesen_init_rom(
         pads[1] = empty_pad_state();
     }
 
-    // O Mesen detecta o console pela extensão; .sfc/.smc/.fig para SNES.
-    let extension = if is_nes { "nes" } else { "sfc" };
+    // O Mesen detecta o console pela extensão do arquivo.
+    let extension = if is_nes {
+        "nes"
+    } else if is_gba {
+        "gba"
+    } else {
+        "sfc"
+    };
     let rom_file =
         std::env::temp_dir().join(format!("emmu_mesen_rom_{}.{extension}", std::process::id()));
     fs::write(&rom_file, &rom_bytes).map_err(|e| format!("Falha ao gravar ROM temporária: {e}"))?;
@@ -321,6 +333,8 @@ fn mesen_init_rom(
     // em runtime — o que exigiria reconstruir os control devices.
     if is_nes {
         connect_nes_controllers();
+    } else if is_gba {
+        connect_gba_controllers();
     } else {
         connect_snes_controllers();
     }
@@ -339,16 +353,18 @@ fn mesen_init_rom(
     // `VideoDecoder::GetBaseFrameInfo()`, que usando `_emu`/`_videoFilter`
     // já liberados no shutdown causa EXC_BAD_ACCESS. As dimensões são fixas
     // e o callback de notificação já publica o tamanho real de cada frame.
-    let height = if is_nes {
-        NES_FRAME_HEIGHT
+    let (width, height) = if is_nes {
+        (NES_WIDTH, NES_FRAME_HEIGHT)
+    } else if is_gba {
+        (GBA_WIDTH, GBA_FRAME_HEIGHT)
     } else {
-        SNES_FRAME_HEIGHT
+        (NES_WIDTH, SNES_FRAME_HEIGHT)
     };
-    MESEN_FRAME_WIDTH.store(NES_WIDTH as u32, Ordering::Relaxed);
+    MESEN_FRAME_WIDTH.store(width as u32, Ordering::Relaxed);
     MESEN_FRAME_HEIGHT.store(height as u32, Ordering::Relaxed);
 
     Ok(MesenInitResult {
-        width: NES_WIDTH as u32,
+        width: width as u32,
         height: height as u32,
     })
 }
@@ -397,6 +413,18 @@ fn mesen_set_button(button: String, pressed: bool, player: Option<u32>) -> Resul
     apply_button_to_state(&mut pads[slot], button.as_str(), pressed);
     set_input_overrides(slot as u32, pads[slot]);
 
+    Ok(())
+}
+
+#[tauri::command]
+fn mesen_reset() -> Result<(), String> {
+    if is_shutting_down() {
+        return Ok(());
+    }
+    if let Ok(mut guard) = LATEST_MESEN_FRAME.lock() {
+        guard.has_frame = false;
+    }
+    reset();
     Ok(())
 }
 
@@ -518,6 +546,7 @@ pub fn run() {
             mesen_init_rom,
             mesen_run_frame,
             mesen_set_button,
+            mesen_reset,
             mesen_stop,
             mesen_release,
             mesen_save_state,
