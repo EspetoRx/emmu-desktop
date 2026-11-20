@@ -2,14 +2,15 @@
 use emmu_mesen_sys::{
     DebugControllerState, GetBaseScreenSize, InitDll, InitializeEmu, IsRunning, LoadRom,
     NOTIFICATION_PPU_FRAME_DONE, RegisterNotificationCallback, Release, Stop,
-    UnregisterNotificationCallback, is_shutting_down, mark_shutting_down, reset_key_state,
-    set_key_state,
+    UnregisterNotificationCallback, configure_audio, connect_nes_controllers, initialize_debugger,
+    is_shutting_down, mark_shutting_down, set_input_overrides,
 };
 use serde::Serialize;
 use std::ffi::CString;
 use std::fs;
 use std::os::raw::{c_int, c_void};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, Once};
 use tauri::State;
 #[cfg(desktop)]
@@ -46,8 +47,8 @@ static LATEST_MESEN_FRAME: Mutex<MesenFrameBuffer> = Mutex::new(MesenFrameBuffer
     has_frame: false,
 });
 
-static ACTIVE_CONTROLLERS: Mutex<[DebugControllerState; 2]> =
-    Mutex::new([DebugControllerState {
+const fn empty_pad_state() -> DebugControllerState {
+    DebugControllerState {
         a: false,
         b: false,
         x: false,
@@ -62,11 +63,21 @@ static ACTIVE_CONTROLLERS: Mutex<[DebugControllerState; 2]> =
         right: false,
         select: false,
         start: false,
-    }; 2]);
+    }
+}
 
-static DEBUGGER_ACTIVE: Mutex<bool> = Mutex::new(false);
+static ACTIVE_CONTROLLERS: Mutex<[DebugControllerState; 2]> =
+    Mutex::new([empty_pad_state(), empty_pad_state()]);
+
 static MESEN_INIT_ONCE: Once = Once::new();
 static MESEN_LISTENER: Mutex<usize> = Mutex::new(0);
+
+/// Dimensões do frame capturadas no carregamento da ROM. O callback de
+/// notificação não pode chamar `GetBaseScreenSize()` (FFI): durante o
+/// encerramento o `VideoDecoder` já pode ter sido destruído e a chamada
+/// causa EXC_BAD_ACCESS em `VideoDecoder::GetBaseFrameInfo`.
+static MESEN_FRAME_WIDTH: AtomicU32 = AtomicU32::new(NES_WIDTH as u32);
+static MESEN_FRAME_HEIGHT: AtomicU32 = AtomicU32::new(240);
 
 fn unregister_mesen_listener_if_any() {
     if let Ok(mut guard) = MESEN_LISTENER.lock() {
@@ -83,17 +94,11 @@ extern "C" fn on_mesen_ppu_frame(notification_type: c_int, param: *mut c_void) {
         return;
     }
 
-    let size = unsafe { GetBaseScreenSize() };
-    if is_shutting_down() {
+    let w = MESEN_FRAME_WIDTH.load(Ordering::Relaxed) as usize;
+    let h = MESEN_FRAME_HEIGHT.load(Ordering::Relaxed) as usize;
+    if w == 0 || h == 0 {
         return;
     }
-
-    let w = if size.width > 0 { size.width as usize } else { NES_WIDTH };
-    let h = if size.height > 0 {
-        size.height as usize
-    } else {
-        DEFAULT_NES_HEIGHT
-    };
     let pixel_count = w.saturating_mul(h);
     if pixel_count == 0 {
         return;
@@ -135,8 +140,6 @@ impl Default for MesenDesktopState {
 
 impl Drop for MesenDesktopState {
     fn drop(&mut self) {
-        // Marca shutdown e nunca chama Stop/Release/GetBaseScreenSize/etc aqui
-        // para evitar EXC_BAD_ACCESS em VideoRenderer::IsRecording().
         mark_shutting_down();
 
         if let Ok(mut guard) = self.temp_rom_path.lock() {
@@ -172,42 +175,25 @@ fn ensure_mesen_initialized() {
             return;
         }
         let home = CString::new("/tmp/mesen_home").expect("CString inválido");
+        // O MesenCE só instala os callbacks de áudio/vídeo quando os handles
+        // são não-nulos. Um ponteiro "dangling" é suficiente: usamos software
+        // renderer e os frames vêm do RegisterNotificationCallback.
+        //
+        // Atenção: no MesenCE `noVideo` controla o áudio e `noAudio` controla
+        // o renderer (flags trocadas em EmuApiWrapper.cpp). Por isso ambos
+        // devem ser `false` para o som funcionar.
+        let handle = std::ptr::NonNull::<u8>::dangling().as_ptr().cast::<c_void>();
+        eprintln!("[ensure_mesen_initialized] InitializeEmu(softwareRenderer=true, noAudio=false, noVideo=false, noInput=true)");
         unsafe {
-            InitializeEmu(
-                home.as_ptr(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                false,
-                true,
-                true,
-                false,
-            );
+            InitializeEmu(home.as_ptr(), handle, handle, true, false, false, true);
             InitDll();
+            configure_audio();
             let listener = RegisterNotificationCallback(Some(on_mesen_ppu_frame));
             if let Ok(mut guard) = MESEN_LISTENER.lock() {
                 *guard = listener as usize;
             }
         }
     });
-}
-
-fn button_scan_code(slot: usize, button: &str) -> Option<u16> {
-    let base: u16 = if slot == 1 { 2000 } else { 1000 };
-    match button {
-        "Up" => Some(base + 1),
-        "Down" => Some(base + 2),
-        "Left" => Some(base + 3),
-        "Right" => Some(base + 4),
-        "Start" => Some(base + 5),
-        "Select" => Some(base + 6),
-        "B" => Some(base + 7),
-        "A" => Some(base + 8),
-        "X" => Some(base + 9),
-        "Y" => Some(base + 10),
-        "L" => Some(base + 11),
-        "R" => Some(base + 12),
-        _ => None,
-    }
 }
 
 fn apply_button_to_state(pad: &mut DebugControllerState, button: &str, pressed: bool) {
@@ -243,15 +229,14 @@ fn mesen_init_rom(
     }
 
     ensure_mesen_initialized();
-    reset_key_state();
 
     if let Ok(mut guard) = LATEST_MESEN_FRAME.lock() {
         guard.has_frame = false;
     }
 
     if let Ok(mut pads) = ACTIVE_CONTROLLERS.lock() {
-        pads[0] = DebugControllerState::default();
-        pads[1] = DebugControllerState::default();
+        pads[0] = empty_pad_state();
+        pads[1] = empty_pad_state();
     }
 
     let rom_file = std::env::temp_dir().join(format!("emmu_mesen_rom_{}.nes", std::process::id()));
@@ -268,10 +253,19 @@ fn mesen_init_rom(
         return Err("Aplicação em processo de encerramento.".into());
     }
 
+    // Cada ROM começa com controles padrão; jogos com dispositivo especial
+    // (zapper, etc.) são reconfigurados automaticamente pelo Mesen ao carregar.
+    connect_nes_controllers();
+
     let loaded = unsafe { LoadRom(rom_cstr.as_ptr().cast_mut(), std::ptr::null_mut()) };
     if !loaded {
         return Err("Mesen falhou ao carregar a ROM NES.".into());
     }
+
+    // O override de controle do Mesen só é aplicado quando o debugger existe.
+    initialize_debugger();
+    set_input_overrides(0, empty_pad_state());
+    set_input_overrides(1, empty_pad_state());
 
     let running = if is_shutting_down() {
         false
@@ -299,6 +293,9 @@ fn mesen_init_rom(
     } else {
         DEFAULT_NES_HEIGHT as u32
     };
+
+    MESEN_FRAME_WIDTH.store(width, Ordering::Relaxed);
+    MESEN_FRAME_HEIGHT.store(height, Ordering::Relaxed);
 
     Ok(MesenInitResult { width, height })
 }
@@ -329,24 +326,23 @@ fn mesen_run_frame(render_graphics: Option<bool>) -> Result<MesenFrameResult, St
 }
 
 #[tauri::command]
-fn mesen_set_button(
-    button: String,
-    pressed: bool,
-    player: Option<u32>,
-) -> Result<(), String> {
+fn mesen_set_button(button: String, pressed: bool, player: Option<u32>) -> Result<(), String> {
     if is_shutting_down() {
         return Ok(());
     }
 
-    let slot = if player.unwrap_or(1) == 2 { 1usize } else { 0usize };
+    let slot = if player.unwrap_or(1) == 2 {
+        1usize
+    } else {
+        0usize
+    };
+
     let mut pads = ACTIVE_CONTROLLERS
         .lock()
         .map_err(|_| "Falha ao acessar estado dos controles.".to_string())?;
 
     apply_button_to_state(&mut pads[slot], button.as_str(), pressed);
-    if let Some(code) = button_scan_code(slot, button.as_str()) {
-        set_key_state(code, pressed);
-    }
+    set_input_overrides(slot as u32, pads[slot]);
 
     Ok(())
 }
@@ -354,11 +350,12 @@ fn mesen_set_button(
 #[tauri::command]
 fn mesen_stop() -> Result<(), String> {
     if let Ok(mut pads) = ACTIVE_CONTROLLERS.lock() {
-        pads[0] = DebugControllerState::default();
-        pads[1] = DebugControllerState::default();
+        pads[0] = empty_pad_state();
+        pads[1] = empty_pad_state();
     }
     if !is_shutting_down() {
-        reset_key_state();
+        set_input_overrides(0, empty_pad_state());
+        set_input_overrides(1, empty_pad_state());
         unsafe {
             if IsRunning() {
                 Stop();
@@ -373,20 +370,19 @@ fn mesen_stop() -> Result<(), String> {
 
 #[tauri::command]
 fn mesen_release() -> Result<(), String> {
-    // Marca shutdown imediatamente para bloquear novas chamadas ao MesenCore
-    // e evitar EXC_BAD_ACCESS em VideoRenderer::IsRecording() durante o fechamento.
+    if !is_shutting_down() {
+        set_input_overrides(0, empty_pad_state());
+        set_input_overrides(1, empty_pad_state());
+    }
     mark_shutting_down();
     unregister_mesen_listener_if_any();
 
     if let Ok(mut pads) = ACTIVE_CONTROLLERS.lock() {
-        pads[0] = DebugControllerState::default();
-        pads[1] = DebugControllerState::default();
+        pads[0] = empty_pad_state();
+        pads[1] = empty_pad_state();
     }
     if let Ok(mut guard) = LATEST_MESEN_FRAME.lock() {
         guard.has_frame = false;
-    }
-    if let Ok(mut dbg_ready) = DEBUGGER_ACTIVE.lock() {
-        *dbg_ready = false;
     }
 
     unsafe {
