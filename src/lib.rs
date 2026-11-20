@@ -3,9 +3,10 @@ use emmu_mesen_sys::{
     DebugControllerState, InitDll, InitializeEmu, IsRunning, LoadRom, NOTIFICATION_PPU_FRAME_DONE,
     NOTIFICATION_REFRESH_SOFTWARE_RENDERER, RegisterNotificationCallback, Release,
     SoftwareRendererFrameAbi, Stop, UnregisterNotificationCallback, configure_audio,
-    connect_gba_controllers, connect_nes_controllers, connect_snes_controllers,
-    initialize_debugger, install_gba_bios, is_shutting_down, load_state_from_file,
-    mark_shutting_down, reset, save_state_to_file, set_audio_volume, set_input_overrides,
+    connect_gameboy_controllers, connect_gba_controllers, connect_nes_controllers,
+    connect_snes_controllers, initialize_debugger, install_gba_bios, is_shutting_down,
+    load_state_from_file, mark_shutting_down, reset, save_state_to_file, set_audio_volume,
+    set_input_overrides,
 };
 use serde::Serialize;
 use std::ffi::CString;
@@ -27,6 +28,8 @@ const NES_FRAME_HEIGHT: usize = 240;
 const SNES_FRAME_HEIGHT: usize = 224;
 const GBA_WIDTH: usize = 240;
 const GBA_FRAME_HEIGHT: usize = 160;
+const GAMEBOY_WIDTH: usize = 160;
+const GAMEBOY_FRAME_HEIGHT: usize = 144;
 
 const NES_PALETTE_64: [u32; 64] = [
     0x00545454, 0x00001E74, 0x00081090, 0x00300088, 0x00440064, 0x005C0030, 0x00540400, 0x003C1800,
@@ -87,9 +90,9 @@ static MESEN_RELEASED: AtomicBool = AtomicBool::new(false);
 /// causa EXC_BAD_ACCESS em `VideoDecoder::GetBaseFrameInfo`.
 static MESEN_FRAME_WIDTH: AtomicU32 = AtomicU32::new(NES_WIDTH as u32);
 static MESEN_FRAME_HEIGHT: AtomicU32 = AtomicU32::new(240);
-/// NES publica o frame no `PpuFrameDone`; SNES não passa buffer nessa
-/// notificação e usa o `RefreshSoftwareRenderer`. O flag evita ler o parâmetro
-/// da notificação 7 como se fosse um buffer de paleta quando o console é SNES.
+/// NES publica o frame no `PpuFrameDone`; SNES, GBA e GBC não passam buffer
+/// nessa notificação e usam o `RefreshSoftwareRenderer`. O flag evita ler o
+/// parâmetro da notificação 7 como se fosse um buffer de paleta nesses consoles.
 static ACTIVE_CONSOLE_IS_NES: AtomicBool = AtomicBool::new(true);
 
 fn unregister_mesen_listener_if_any() {
@@ -292,6 +295,8 @@ fn mesen_init_rom(
     let console_name = console.as_deref().unwrap_or("NES");
     let is_nes = console_name.eq_ignore_ascii_case("NES");
     let is_gba = console_name.eq_ignore_ascii_case("GBA");
+    let is_gameboy =
+        console_name.eq_ignore_ascii_case("GBC") || console_name.eq_ignore_ascii_case("GB");
     ACTIVE_CONSOLE_IS_NES.store(is_nes, Ordering::Relaxed);
 
     ensure_mesen_initialized();
@@ -310,6 +315,10 @@ fn mesen_init_rom(
         "nes"
     } else if is_gba {
         "gba"
+    } else if is_gameboy {
+        // Mesen detecta o console pela extensão; `.gbc` também executa carts
+        // DMG no modo de compatibilidade colorido (AutoFavorGbc).
+        "gbc"
     } else {
         "sfc"
     };
@@ -335,6 +344,8 @@ fn mesen_init_rom(
         connect_nes_controllers();
     } else if is_gba {
         connect_gba_controllers();
+    } else if is_gameboy {
+        connect_gameboy_controllers();
     } else {
         connect_snes_controllers();
     }
@@ -357,6 +368,8 @@ fn mesen_init_rom(
         (NES_WIDTH, NES_FRAME_HEIGHT)
     } else if is_gba {
         (GBA_WIDTH, GBA_FRAME_HEIGHT)
+    } else if is_gameboy {
+        (GAMEBOY_WIDTH, GAMEBOY_FRAME_HEIGHT)
     } else {
         (NES_WIDTH, SNES_FRAME_HEIGHT)
     };
