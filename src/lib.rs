@@ -3,7 +3,8 @@ use emmu_mesen_sys::{
     DebugControllerState, GetBaseScreenSize, InitDll, InitializeEmu, IsRunning, LoadRom,
     NOTIFICATION_PPU_FRAME_DONE, RegisterNotificationCallback, Release, Stop,
     UnregisterNotificationCallback, configure_audio, connect_nes_controllers, initialize_debugger,
-    is_shutting_down, mark_shutting_down, set_input_overrides,
+    is_shutting_down, load_state_from_file, mark_shutting_down, save_state_to_file,
+    set_audio_volume, set_input_overrides,
 };
 use serde::Serialize;
 use std::ffi::CString;
@@ -395,6 +396,45 @@ fn mesen_release() -> Result<(), String> {
     Ok(())
 }
 
+fn mesen_state_path() -> PathBuf {
+    std::env::temp_dir().join(format!("emmu_mesen_state_{}.mss", std::process::id()))
+}
+
+#[tauri::command]
+fn mesen_save_state() -> Result<Vec<u8>, String> {
+    if is_shutting_down() {
+        return Err("Aplicação em processo de encerramento.".into());
+    }
+    let path = mesen_state_path();
+    let path_str = path.to_string_lossy().to_string();
+    save_state_to_file(&path_str).map_err(|e| format!("Falha ao salvar estado: {e}"))?;
+    let bytes = fs::read(&path).map_err(|e| format!("Falha ao ler estado: {e}"))?;
+    let _ = fs::remove_file(&path);
+    Ok(bytes)
+}
+
+#[tauri::command]
+fn mesen_load_state(state: Vec<u8>) -> Result<(), String> {
+    if is_shutting_down() {
+        return Ok(());
+    }
+    if state.is_empty() {
+        return Err("Estado salvo vazio.".into());
+    }
+    let path = mesen_state_path();
+    fs::write(&path, &state).map_err(|e| format!("Falha ao gravar estado: {e}"))?;
+    let path_str = path.to_string_lossy().to_string();
+    load_state_from_file(&path_str).map_err(|e| format!("Falha ao carregar estado: {e}"))?;
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+#[tauri::command]
+fn mesen_set_volume(volume: u32) -> Result<(), String> {
+    set_audio_volume(volume);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -405,6 +445,9 @@ pub fn run() {
             mesen_set_button,
             mesen_stop,
             mesen_release,
+            mesen_save_state,
+            mesen_load_state,
+            mesen_set_volume,
         ]);
 
     #[cfg(desktop)]
