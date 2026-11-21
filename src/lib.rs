@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, Once};
 use tauri::State;
+use tauri::http::{Response as HttpResponse, StatusCode};
 #[cfg(desktop)]
 use tauri::{
     Emitter,
@@ -61,6 +62,49 @@ static LATEST_MESEN_FRAME: Mutex<MesenFrameBuffer> = Mutex::new(MesenFrameBuffer
     height: NES_FRAME_HEIGHT as u32,
     has_frame: false,
 });
+
+/// Codifica um frame RGBA8888 como BMP de 24 bits (bottom-up, BGR) para ser
+/// servido ao WebView via protocolo customizado. O navegador decodifica o BMP
+/// nativamente, fora da thread principal, sem trazer megabytes de pixels para
+/// o JavaScript — diferente de `Vec<u8>` em `invoke`, que vira um array JSON.
+fn frame_as_bmp(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let row_size = w * 3;
+    let padded_row_size = (row_size + 3) & !3;
+    let pixel_bytes = padded_row_size * h;
+    let total = 54 + pixel_bytes;
+    let mut bmp = vec![0u8; total];
+
+    bmp[0..2].copy_from_slice(b"BM");
+    bmp[2..6].copy_from_slice(&(total as u32).to_le_bytes());
+    bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+
+    // BITMAPINFOHEADER
+    bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+    bmp[18..22].copy_from_slice(&(width as i32).to_le_bytes());
+    bmp[22..26].copy_from_slice(&(height as i32).to_le_bytes());
+    bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+    bmp[34..38].copy_from_slice(&(pixel_bytes as u32).to_le_bytes());
+
+    for row in 0..h {
+        // BMP é bottom-up: a primeira linha do arquivo é a última do frame.
+        let src_y = h - 1 - row;
+        let dst_base = 54 + row * padded_row_size;
+        for col in 0..w {
+            let src = (src_y * w + col) * 4;
+            if src + 2 >= rgba.len() {
+                break;
+            }
+            let dst = dst_base + col * 3;
+            bmp[dst] = rgba[src + 2]; // B
+            bmp[dst + 1] = rgba[src + 1]; // G
+            bmp[dst + 2] = rgba[src]; // R
+        }
+    }
+    bmp
+}
 
 const fn empty_pad_state() -> DebugControllerState {
     DebugControllerState {
@@ -131,7 +175,7 @@ extern "C" fn on_mesen_notification(notification_type: c_int, param: *mut c_void
         }
         let src = unsafe { std::slice::from_raw_parts(surface.buffer, pixel_count) };
 
-        if let Ok(mut guard) = LATEST_MESEN_FRAME.try_lock() {
+        if let Ok(mut guard) = LATEST_MESEN_FRAME.lock() {
             let needed_bytes = pixel_count * 4;
             if guard.rgba.len() != needed_bytes {
                 guard.rgba.resize(needed_bytes, 0);
@@ -169,7 +213,7 @@ extern "C" fn on_mesen_notification(notification_type: c_int, param: *mut c_void
 
     let src_slice = unsafe { std::slice::from_raw_parts(param as *const u16, pixel_count) };
 
-    if let Ok(mut guard) = LATEST_MESEN_FRAME.try_lock() {
+    if let Ok(mut guard) = LATEST_MESEN_FRAME.lock() {
         let needed_bytes = pixel_count * 4;
         if guard.rgba.len() != needed_bytes {
             guard.rgba.resize(needed_bytes, 0);
@@ -221,9 +265,9 @@ struct MesenInitResult {
 
 #[derive(Serialize)]
 struct MesenFrameResult {
-    frame: Vec<u8>,
     width: u32,
     height: u32,
+    has_frame: bool,
     #[serde(rename = "processingTimeMs")]
     processing_time_ms: f64,
 }
@@ -410,16 +454,15 @@ fn mesen_run_frame(render_graphics: Option<bool>) -> Result<MesenFrameResult, St
 
     let width = guard.width.max(1);
     let height = guard.height.max(1);
-    let frame = if !is_shutting_down() && should_render && guard.has_frame {
-        guard.rgba.clone()
-    } else {
-        Vec::new()
-    };
+    let has_frame = !is_shutting_down() && should_render && guard.has_frame;
 
+    // Não serializar os pixels aqui: o frontend busca o frame como BMP pelo
+    // protocolo `emmu-frame`. Um `Vec<u8>` nesta resposta se torna um array
+    // JSON de ~800 KB por frame e trava a thread principal do WebView.
     Ok(MesenFrameResult {
-        frame,
         width,
         height,
+        has_frame,
         processing_time_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
 }
@@ -572,6 +615,36 @@ fn mesen_set_volume(volume: u32) -> Result<(), String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(MesenDesktopState::default())
+        // Servir o frame como imagem BMP evita serializar ~245 KB de pixels
+        // como array JSON a 60 fps pelo `invoke`, que saturava a thread do
+        // WebView e impedia a imagem de aparecer (o áudio vinha do SDL).
+        .register_asynchronous_uri_scheme_protocol("emmu-frame", |_app, _request, responder| {
+            let (rgba, width, height) = {
+                match LATEST_MESEN_FRAME.lock() {
+                    Ok(guard) if guard.has_frame && !guard.rgba.is_empty() => {
+                        (guard.rgba.clone(), guard.width, guard.height)
+                    }
+                    _ => (Vec::new(), NES_WIDTH as u32, NES_FRAME_HEIGHT as u32),
+                }
+            };
+            let body = if rgba.is_empty() {
+                frame_as_bmp(
+                    &vec![0u8; width as usize * height as usize * 4],
+                    width,
+                    height,
+                )
+            } else {
+                frame_as_bmp(&rgba, width, height)
+            };
+            responder.respond(
+                HttpResponse::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "image/bmp")
+                    .header("Cache-Control", "no-store")
+                    .body(body)
+                    .expect("resposta BMP inválida"),
+            );
+        })
         .invoke_handler(tauri::generate_handler![
             mesen_init_rom,
             mesen_run_frame,
@@ -652,4 +725,23 @@ pub fn run() {
             release_mesen_once();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_as_bmp_has_valid_header_and_size() {
+        let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255];
+        let bmp = frame_as_bmp(&rgba, 2, 1);
+        assert_eq!(&bmp[0..2], b"BM");
+        let pixel_offset = u32::from_le_bytes(bmp[10..14].try_into().unwrap()) as usize;
+        assert_eq!(pixel_offset, 54);
+        assert_eq!(bmp.len(), 54 + 8);
+        // BMP é BGR: vermelho (255,0,0) vira [0,0,255], verde vira [0,255,0].
+        // Cada linha é alinhada a 4 bytes, então 2 pixels ocupam 8 bytes.
+        assert_eq!(&bmp[54..57], &[0, 0, 255]);
+        assert_eq!(&bmp[57..60], &[0, 255, 0]);
+    }
 }

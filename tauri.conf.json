@@ -4,9 +4,16 @@
   "version": "0.1.0",
   "identifier": "com.emmu.app",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ../web/ui -- --host 127.0.0.1",
+    "beforeDevCommand": {
+      "script": "npm run dev -- --host 127.0.0.1",
+      "cwd": "../web/ui",
+      "wait": false
+    },
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "npm run build --prefix ../web/ui",
+    "beforeBuildCommand": {
+      "script": "npm run build",
+      "cwd": "../web/ui"
+    },
     "frontendDist": "../web/ui/dist"
   },
   "app": {
