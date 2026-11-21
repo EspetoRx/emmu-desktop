@@ -33,6 +33,10 @@ const GBA_FRAME_HEIGHT: usize = 160;
 /// Game Gear usa a mesma área útil do LCD do Game Boy após o overscan do Mesen.
 const GAMEBOY_WIDTH: usize = 160;
 const GAMEBOY_FRAME_HEIGHT: usize = 144;
+/// Master System publica o frame NTSC de 256x224 (o callback de notificação
+/// pode atualizar para 256x240 em ROMs PAL).
+const SMS_WIDTH: usize = 256;
+const SMS_FRAME_HEIGHT: usize = 224;
 /// Mesen publica o frame PCE em 256x242 (o mesmo conteúdo do core WASM, sem o
 /// overscan horizontal esquerdo/direito). O callback de notificação informa
 /// as dimensões reais, então estes valores são apenas o ponto de partida do
@@ -379,6 +383,7 @@ fn mesen_init_rom(
     let is_gbc = console_name.eq_ignore_ascii_case("GBC");
     let is_gameboy = is_gb || is_gbc;
     let is_gg = console_name.eq_ignore_ascii_case("GG");
+    let is_sms = console_name.eq_ignore_ascii_case("SMS");
     let is_ws = console_name.eq_ignore_ascii_case("WS");
     let is_pce = console_name.eq_ignore_ascii_case("PCE");
     ACTIVE_CONSOLE_IS_NES.store(is_nes, Ordering::Relaxed);
@@ -408,6 +413,9 @@ fn mesen_init_rom(
         // O Mesen detecta SMS/Game Gear pela extensão; `.gg` seleciona o
         // modelo Game Gear e a região de LCD correta.
         "gg"
+    } else if is_sms {
+        // `.sms` seleciona o Master System no Mesen.
+        "sms"
     } else if is_ws {
         // `.ws` deixa o Mesen escolher Mono/Color pelo footer da ROM.
         "ws"
@@ -442,7 +450,7 @@ fn mesen_init_rom(
         connect_gameboy_dmg_controllers();
     } else if is_gbc {
         connect_gameboy_controllers();
-    } else if is_gg {
+    } else if is_gg || is_sms {
         connect_sms_controllers();
     } else if is_ws {
         connect_ws_controllers();
@@ -472,6 +480,8 @@ fn mesen_init_rom(
         (GBA_WIDTH, GBA_FRAME_HEIGHT)
     } else if is_gameboy || is_gg {
         (GAMEBOY_WIDTH, GAMEBOY_FRAME_HEIGHT)
+    } else if is_sms {
+        (SMS_WIDTH, SMS_FRAME_HEIGHT)
     } else if is_ws {
         (WS_WIDTH, WS_FRAME_HEIGHT)
     } else if is_pce {
