@@ -4,9 +4,9 @@ use emmu_mesen_sys::{
     NOTIFICATION_REFRESH_SOFTWARE_RENDERER, RegisterNotificationCallback, Release,
     SoftwareRendererFrameAbi, Stop, UnregisterNotificationCallback, configure_audio,
     connect_gameboy_controllers, connect_gameboy_dmg_controllers, connect_gba_controllers,
-    connect_nes_controllers, connect_snes_controllers, initialize_debugger, install_gba_bios,
-    is_shutting_down, load_state_from_file, mark_shutting_down, reset, save_state_to_file,
-    set_audio_volume, set_input_overrides,
+    connect_nes_controllers, connect_pce_controllers, connect_snes_controllers,
+    initialize_debugger, install_gba_bios, is_shutting_down, load_state_from_file,
+    mark_shutting_down, reset, save_state_to_file, set_audio_volume, set_input_overrides,
 };
 use serde::Serialize;
 use std::ffi::CString;
@@ -30,6 +30,12 @@ const GBA_WIDTH: usize = 240;
 const GBA_FRAME_HEIGHT: usize = 160;
 const GAMEBOY_WIDTH: usize = 160;
 const GAMEBOY_FRAME_HEIGHT: usize = 144;
+/// Mesen publica o frame PCE em 256x242 (o mesmo conteúdo do core WASM, sem o
+/// overscan horizontal esquerdo/direito). O callback de notificação informa
+/// as dimensões reais, então estes valores são apenas o ponto de partida do
+/// canvas antes do primeiro frame.
+const PCE_WIDTH: usize = 256;
+const PCE_FRAME_HEIGHT: usize = 242;
 
 const NES_PALETTE_64: [u32; 64] = [
     0x00545454, 0x00001E74, 0x00081090, 0x00300088, 0x00440064, 0x005C0030, 0x00540400, 0x003C1800,
@@ -298,6 +304,7 @@ fn mesen_init_rom(
     let is_gb = console_name.eq_ignore_ascii_case("GB");
     let is_gbc = console_name.eq_ignore_ascii_case("GBC");
     let is_gameboy = is_gb || is_gbc;
+    let is_pce = console_name.eq_ignore_ascii_case("PCE");
     ACTIVE_CONSOLE_IS_NES.store(is_nes, Ordering::Relaxed);
 
     ensure_mesen_initialized();
@@ -321,6 +328,8 @@ fn mesen_init_rom(
         "gb"
     } else if is_gbc {
         "gbc"
+    } else if is_pce {
+        "pce"
     } else {
         "sfc"
     };
@@ -350,6 +359,8 @@ fn mesen_init_rom(
         connect_gameboy_dmg_controllers();
     } else if is_gbc {
         connect_gameboy_controllers();
+    } else if is_pce {
+        connect_pce_controllers();
     } else {
         connect_snes_controllers();
     }
@@ -374,6 +385,8 @@ fn mesen_init_rom(
         (GBA_WIDTH, GBA_FRAME_HEIGHT)
     } else if is_gameboy {
         (GAMEBOY_WIDTH, GAMEBOY_FRAME_HEIGHT)
+    } else if is_pce {
+        (PCE_WIDTH, PCE_FRAME_HEIGHT)
     } else {
         (NES_WIDTH, SNES_FRAME_HEIGHT)
     };
