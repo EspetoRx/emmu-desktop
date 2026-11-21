@@ -3,10 +3,10 @@ use emmu_mesen_sys::{
     DebugControllerState, InitDll, InitializeEmu, IsRunning, LoadRom, NOTIFICATION_PPU_FRAME_DONE,
     NOTIFICATION_REFRESH_SOFTWARE_RENDERER, RegisterNotificationCallback, Release,
     SoftwareRendererFrameAbi, Stop, UnregisterNotificationCallback, configure_audio,
-    connect_gameboy_controllers, connect_gba_controllers, connect_nes_controllers,
-    connect_snes_controllers, initialize_debugger, install_gba_bios, is_shutting_down,
-    load_state_from_file, mark_shutting_down, reset, save_state_to_file, set_audio_volume,
-    set_input_overrides,
+    connect_gameboy_controllers, connect_gameboy_dmg_controllers, connect_gba_controllers,
+    connect_nes_controllers, connect_snes_controllers, initialize_debugger, install_gba_bios,
+    is_shutting_down, load_state_from_file, mark_shutting_down, reset, save_state_to_file,
+    set_audio_volume, set_input_overrides,
 };
 use serde::Serialize;
 use std::ffi::CString;
@@ -295,8 +295,9 @@ fn mesen_init_rom(
     let console_name = console.as_deref().unwrap_or("NES");
     let is_nes = console_name.eq_ignore_ascii_case("NES");
     let is_gba = console_name.eq_ignore_ascii_case("GBA");
-    let is_gameboy =
-        console_name.eq_ignore_ascii_case("GBC") || console_name.eq_ignore_ascii_case("GB");
+    let is_gb = console_name.eq_ignore_ascii_case("GB");
+    let is_gbc = console_name.eq_ignore_ascii_case("GBC");
+    let is_gameboy = is_gb || is_gbc;
     ACTIVE_CONSOLE_IS_NES.store(is_nes, Ordering::Relaxed);
 
     ensure_mesen_initialized();
@@ -315,9 +316,10 @@ fn mesen_init_rom(
         "nes"
     } else if is_gba {
         "gba"
-    } else if is_gameboy {
-        // Mesen detecta o console pela extensão; `.gbc` também executa carts
-        // DMG no modo de compatibilidade colorido (AutoFavorGbc).
+    } else if is_gb {
+        // Mesen detecta o console pela extensão; `.gb` força o DMG clássico.
+        "gb"
+    } else if is_gbc {
         "gbc"
     } else {
         "sfc"
@@ -344,7 +346,9 @@ fn mesen_init_rom(
         connect_nes_controllers();
     } else if is_gba {
         connect_gba_controllers();
-    } else if is_gameboy {
+    } else if is_gb {
+        connect_gameboy_dmg_controllers();
+    } else if is_gbc {
         connect_gameboy_controllers();
     } else {
         connect_snes_controllers();
