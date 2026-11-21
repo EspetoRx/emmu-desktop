@@ -28,6 +28,9 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.png"],
+    "resources": {
+      "../../crates/emmu-mesen-sys/runtime/*": ""
+    },
     "iOS": {
       "minimumSystemVersion": "15.0"
     }
