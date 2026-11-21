@@ -106,6 +106,31 @@ fn frame_as_bmp(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     bmp
 }
 
+/// Codifica o último frame como PNG para a miniatura da biblioteca. Isso é
+/// feito no Rust porque o frame exibido vem de `emmu-frame://` (outra origem),
+/// o que deixa o `<canvas>` do WebView marcado como "tainted" e faz
+/// `canvas.toBlob()` falhar silenciosamente no desktop.
+fn frame_as_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let expected = width as usize * height as usize * 4;
+    if width == 0 || height == 0 || rgba.len() < expected {
+        return Err("Frame do Mesen indisponível para captura.".to_owned());
+    }
+
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|error| format!("Falha ao iniciar PNG: {error}"))?;
+        writer
+            .write_image_data(&rgba[..expected])
+            .map_err(|error| format!("Falha a escrever PNG: {error}"))?;
+    }
+    Ok(png_bytes)
+}
+
 const fn empty_pad_state() -> DebugControllerState {
     DebugControllerState {
         a: false,
@@ -573,6 +598,23 @@ fn mesen_save_state() -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
+fn mesen_capture_preview() -> Result<Vec<u8>, String> {
+    if is_shutting_down() {
+        return Err("Aplicação em processo de encerramento.".into());
+    }
+    let (rgba, width, height) = {
+        let guard = LATEST_MESEN_FRAME
+            .lock()
+            .map_err(|_| "Falha ao acessar buffer de frame do Mesen.".to_string())?;
+        if !guard.has_frame || guard.rgba.is_empty() {
+            return Err("Ainda não há um frame do jogo para capturar.".to_owned());
+        }
+        (guard.rgba.clone(), guard.width, guard.height)
+    };
+    frame_as_png(&rgba, width, height)
+}
+
+#[tauri::command]
 fn mesen_load_state(state: Vec<u8>) -> Result<(), String> {
     if is_shutting_down() {
         return Ok(());
@@ -654,6 +696,7 @@ pub fn run() {
             mesen_release,
             mesen_save_state,
             mesen_load_state,
+            mesen_capture_preview,
             mesen_set_volume,
             mesen_set_p2_enabled,
         ]);
@@ -743,5 +786,18 @@ mod tests {
         // Cada linha é alinhada a 4 bytes, então 2 pixels ocupam 8 bytes.
         assert_eq!(&bmp[54..57], &[0, 0, 255]);
         assert_eq!(&bmp[57..60], &[0, 255, 0]);
+    }
+
+    #[test]
+    fn frame_as_png_has_valid_header_and_size() {
+        let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255];
+        let png = frame_as_png(&rgba, 2, 1).expect("PNG deve ser gerado");
+        assert_eq!(&png[0..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(&png[12..16], b"IHDR");
+        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        assert_eq!((width, height), (2, 1));
+        assert!(png.len() > 33);
+        assert!(frame_as_png(&rgba, 0, 1).is_err());
     }
 }

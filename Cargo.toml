@@ -12,6 +12,7 @@ emmu-core = { path = "../../crates/emmu-core" }
 emmu-nes = { path = "../../crates/emmu-nes" }
 emmu-frontend = { path = "../../crates/emmu-frontend" }
 emmu-mesen-sys = { path = "../../crates/emmu-mesen-sys" }
+png = "0.17"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 
