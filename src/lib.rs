@@ -5,9 +5,9 @@ use emmu_mesen_sys::{
     SoftwareRendererFrameAbi, Stop, UnregisterNotificationCallback, configure_audio,
     connect_gameboy_controllers, connect_gameboy_dmg_controllers, connect_gba_controllers,
     connect_nes_controllers, connect_pce_controllers, connect_sms_controllers,
-    connect_snes_controllers, initialize_debugger, install_gba_bios, is_shutting_down,
-    load_state_from_file, mark_shutting_down, reset, save_state_to_file, set_audio_volume,
-    set_input_overrides,
+    connect_snes_controllers, connect_ws_controllers, initialize_debugger, install_gba_bios,
+    is_shutting_down, load_state_from_file, mark_shutting_down, reset, save_state_to_file,
+    set_audio_volume, set_input_overrides,
 };
 use serde::Serialize;
 use std::ffi::CString;
@@ -39,6 +39,9 @@ const GAMEBOY_FRAME_HEIGHT: usize = 144;
 /// canvas antes do primeiro frame.
 const PCE_WIDTH: usize = 256;
 const PCE_FRAME_HEIGHT: usize = 242;
+/// WonderSwan publica o frame LCD nativo em 224x144 (sem ícones e sem rotação).
+const WS_WIDTH: usize = 224;
+const WS_FRAME_HEIGHT: usize = 144;
 
 const NES_PALETTE_64: [u32; 64] = [
     0x00545454, 0x00001E74, 0x00081090, 0x00300088, 0x00440064, 0x005C0030, 0x00540400, 0x003C1800,
@@ -376,6 +379,7 @@ fn mesen_init_rom(
     let is_gbc = console_name.eq_ignore_ascii_case("GBC");
     let is_gameboy = is_gb || is_gbc;
     let is_gg = console_name.eq_ignore_ascii_case("GG");
+    let is_ws = console_name.eq_ignore_ascii_case("WS");
     let is_pce = console_name.eq_ignore_ascii_case("PCE");
     ACTIVE_CONSOLE_IS_NES.store(is_nes, Ordering::Relaxed);
 
@@ -404,6 +408,9 @@ fn mesen_init_rom(
         // O Mesen detecta SMS/Game Gear pela extensão; `.gg` seleciona o
         // modelo Game Gear e a região de LCD correta.
         "gg"
+    } else if is_ws {
+        // `.ws` deixa o Mesen escolher Mono/Color pelo footer da ROM.
+        "ws"
     } else if is_pce {
         "pce"
     } else {
@@ -437,6 +444,8 @@ fn mesen_init_rom(
         connect_gameboy_controllers();
     } else if is_gg {
         connect_sms_controllers();
+    } else if is_ws {
+        connect_ws_controllers();
     } else if is_pce {
         connect_pce_controllers();
     } else {
@@ -463,6 +472,8 @@ fn mesen_init_rom(
         (GBA_WIDTH, GBA_FRAME_HEIGHT)
     } else if is_gameboy || is_gg {
         (GAMEBOY_WIDTH, GAMEBOY_FRAME_HEIGHT)
+    } else if is_ws {
+        (WS_WIDTH, WS_FRAME_HEIGHT)
     } else if is_pce {
         (PCE_WIDTH, PCE_FRAME_HEIGHT)
     } else {
