@@ -387,8 +387,12 @@ fn mesen_init_rom(
     let is_ws = console_name.eq_ignore_ascii_case("WS");
     let is_pce = console_name.eq_ignore_ascii_case("PCE");
     let is_n64 = console_name.eq_ignore_ascii_case("N64");
-    if is_n64 {
-        return Err("Nintendo 64 ainda não é suportado no backend desktop nativo. Use a versão web por enquanto.".into());
+    let is_nds = console_name.eq_ignore_ascii_case("NDS");
+    if is_n64 || is_nds {
+        return Err(format!(
+            "{} não é suportado pelo backend Mesen; o Emmu executa este console em WASM dentro do WebView.",
+            if is_nds { "Nintendo DS" } else { "Nintendo 64" }
+        ));
     }
     ACTIVE_CONSOLE_IS_NES.store(is_nes, Ordering::Relaxed);
 

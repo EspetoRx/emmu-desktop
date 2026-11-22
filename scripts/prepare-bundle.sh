@@ -11,6 +11,10 @@
 #   dentro do WebView. Eles entram no instalador de duas formas: embutidos no
 #   frontendDist (dist/wasm/n64/) e como resources explícitos em tauri.conf.json.
 #
+# Nintendo DS:
+#   o módulo WASM do dust é importado pelo worker dentro do frontendDist; não
+#   há assets soltos. Apenas a licença GPL é copiada para runtime/.
+#
 # Uso:
 #   bash platforms/desktop/scripts/prepare-bundle.sh
 #   npm run desktop:build   # chama este script antes do cargo tauri build
@@ -98,6 +102,7 @@ cp "$ROOT_DIR/crates/emmu-gba/LICENSE-WEB-GBA-EMULATOR.txt" \
                                        "$RUNTIME/LICENSE-WEB-GBA.txt"
 cp "$MESEN_DIR/LICENSE-GBA-BIOS.txt"   "$RUNTIME/LICENSE-GBA-BIOS.txt"
 cp "$DESKTOP_DIR/licenses/GPL-3.0.txt" "$RUNTIME/LICENSE-GPL-3.0.txt"
+cp "$ROOT_DIR/crates/emmu-nds/vendor/dust/LICENSE" "$RUNTIME/LICENSE-DUST.txt"
 cp "$DESKTOP_DIR/THIRD-PARTY-NOTICES.txt" \
                                        "$RUNTIME/THIRD-PARTY-NOTICES.txt"
 

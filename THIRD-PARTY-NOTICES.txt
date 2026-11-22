@@ -37,6 +37,10 @@ Núcleos de emulação e bibliotecas de runtime
   - oxGBC (GB/GBC) — GPL-3.0-only, mxmgorin/oxgbc
   - JGenesis smsgg-core (GG/SMS) e pce-core (PCE) — GPL-3.0-only, jsgroth/jgenesis
   - Swanium (WS/WSC) — MIT, Copyright (c) 2026 bubio
+  - dust (NDS) — GPL-3.0, Kelpsyberry/dust @ 76d79f2; emu-utils e arm-decoder
+    são usados apenas como dependências de build, sem licença própria no upstream
+    (distribuídos como parte deste trabalho GPL-3.0). Ver LICENSE-DUST.txt e
+    LICENSE-GPL-3.0.txt. Código-fonte: https://github.com/Kelpsyberry/dust
 
 Interface e runtime do app
 --------------------------
