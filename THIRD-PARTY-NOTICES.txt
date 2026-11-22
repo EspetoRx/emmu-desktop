@@ -1,0 +1,53 @@
+Emmu — avisos de software de terceiros incluídos no instalador
+=============================================================
+
+Este arquivo acompanha o instalador desktop. Os textos integrais das licenças
+estão em arquivos separados no mesmo diretório de recursos (Contents/Resources
+no macOS, usr/share no Linux), com prefixo LICENSE-.
+
+Núcleos de emulação e bibliotecas de runtime
+--------------------------------------------
+
+* MesenCE / Mesen 2 (MesenCore.dylib/.so)
+  GPL-3.0 — Copyright (C) 2014-2025 Sour
+  Ver LICENSE-MESEN.txt e LICENSE-GPL-3.0.txt (texto integral).
+  Código-fonte: https://github.com/SourMesen/Mesen2
+
+* SDL2 2.32.10 (libSDL2-2.0.0.dylib / libSDL2-2.0.so.0)
+  zlib — Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  Ver LICENSE-SDL2.txt. Usado apenas para áudio, carregado via dlopen.
+
+* N64Wasm (n64wasm.js, n64wasm.wasm, assets.zip, fontes em assets.zip)
+  MIT — Copyright (c) 2021 Neil Barkhina
+  Ver LICENSE-N64WASM.txt. Origem: https://github.com/nbarkhina/N64Wasm
+  commit 3056c89d73efea037aa5653a065ab65947e00149.
+  Inclui mupen64plus e ParaLLEl-RDP compilados para WebAssembly.
+
+* Web-GBA / gbajs (embutido no WASM do core GBA)
+  BSD-2-Clause — Copyright (c) 2012 Jeffrey Pfau; adaptação web por alexcerezo.
+  Ver LICENSE-WEB-GBA.txt.
+
+* BIOS GBA open-source (embutida no executável e instalada em Firmware/)
+  MIT — Copyright 2020-2021 DenSinH and fleroviux (Cult-of-GBA/BIOS).
+  Ver LICENSE-GBA-BIOS.txt.
+
+* Cores compilados dentro dos módulos WASM (sem arquivos soltos no instalador):
+  - Super Sabicom (SNES) — MIT, Copyright (c) 2022 Hideyuki Tanaka
+  - TetaNES (NES) — MIT OR Apache-2.0, Copyright (c) 2021 Luke Petherbridge
+  - oxGBC (GB/GBC) — GPL-3.0-only, mxmgorin/oxgbc
+  - JGenesis smsgg-core (GG/SMS) e pce-core (PCE) — GPL-3.0-only, jsgroth/jgenesis
+  - Swanium (WS/WSC) — MIT, Copyright (c) 2026 bubio
+
+Interface e runtime do app
+--------------------------
+
+* Vue 3 — MIT, Copyright (c) 2018-present Evan You
+* Tauri 2 — Apache-2.0 OR MIT
+* Vite — MIT, Copyright (c) 2019-present Evan You e colaboradores
+* wasm-bindgen / js-sys / wasm-bindgen-futures — MIT OR Apache-2.0 (rustwasm)
+* fflate — MIT
+* WebView do sistema operacional (WKWebView/WebView2/WebKitGTK) — não redistribuído
+
+O código-fonte dos componentes sob GPL está disponível mediante solicitação,
+além dos repositórios upstream indicados acima. Nenhum ROM ou BIOS proprietária
+é distribuída com este instalador.

@@ -87,7 +87,15 @@ npm run desktop:dev
 npm run desktop:build
 ```
 
-Saídas no macOS: `target/release/bundle/macos/Emmu.app` e `target/release/bundle/dmg/Emmu_0.1.0_aarch64.dmg`. O bundle inclui `MesenCore.dylib` e `libSDL2-2.0.0.dylib` com rpath `@executable_path/../Resources`.
+Saídas no macOS: `target/release/bundle/macos/Emmu.app` e `target/release/bundle/dmg/Emmu_0.2.0_aarch64.dmg`. `npm run desktop:build` chama `scripts/prepare-bundle.sh`, que prepara as dependências externas antes do `cargo tauri build`.
+
+O bundle inclui, em `Contents/Resources/`:
+
+- `MesenCore.dylib` e `libSDL2-2.0.0.dylib`, com rpath `@executable_path/../Resources` e `@loader_path` no núcleo (é assim que o `dlopen` do SDL2 resolve sem exigir instalação do usuário);
+- `wasm/n64/n64wasm.js`, `wasm/n64/n64wasm.wasm` e `wasm/n64/assets.zip` — runtime do N64, que roda no WebView; também embedados no frontend;
+- `LICENSE-SDL2.txt`, `LICENSE-N64WASM.txt`, `LICENSE-WEB-GBA.txt`, `LICENSE-GBA-BIOS.txt`, `LICENSE-GPL-3.0.txt`, `LICENSE-MESEN.txt` e `THIRD-PARTY-NOTICES.txt`.
+
+Os dez módulos WASM e a BIOS GBA vão embutidos no executável. O `postbuild` da UI falha o build se algum deles estiver ausente em `dist/`. Veja também `crates/emmu-mesen-sys/BUNDLE.md`.
 
 Para rodar o binário de desenvolvimento direto, o `.vscode/launch.json` usa `DYLD_LIBRARY_PATH=/tmp/MesenCE/InteropDLL/obj.osx-arm64`.
 
@@ -101,7 +109,7 @@ Inclui `frame_as_bmp_has_valid_header_and_size` e `frame_as_png_has_valid_header
 
 ## Limitações
 
-- Nenhum core WASM é usado no desktop; a compatibilidade é a do MesenCE.
+- Nenhum core WASM é usado no desktop para consoles Mesen; a compatibilidade é a do MesenCE. Nintendo 64 é a exceção: roda o mesmo WASM no WebView.
 - Não há seletor de filtro de vídeo nesta camada.
 - Não há UI touch específica para desktop; a UI compartilhada detecta dispositivos touch por User-Agent.
 - Windows ainda não tem runtime Mesen/SDL empacotado; macOS e Linux são os alvos suportados hoje.
@@ -115,6 +123,8 @@ Não há campo `license` em `Cargo.toml` nem arquivo `LICENSE` neste submódulo.
 | MesenCE | GPL-3.0 — `Copyright (C) 2014-2025 Sour` |
 | SDL2 2.32.10 | zlib — `Copyright (C) 1997-2025 Sam Lantinga` |
 | BIOS GBA | MIT — `Copyright 2020 - 2021 DenSinH and fleroviux` |
+| N64Wasm | MIT — `Copyright (c) 2021 Neil Barkhina` |
+| Web-GBA / gbajs | BSD-2-Clause — `Copyright (c) 2012 Jeffrey Pfau` |
 | `png`, `serde`, `tauri` | MIT/Apache-2.0 conforme cada crate |
 
-Preserve os textos de licença no instalador.
+Os textos são copiados para `Contents/Resources/` pelo `scripts/prepare-bundle.sh` e declarados em `bundle.resources`. Preserve-os no instalador.
