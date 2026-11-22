@@ -28,7 +28,12 @@
       }
     ],
     "security": {
-      "capabilities": ["default"]
+      "capabilities": ["default"],
+      "headers": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+        "Cross-Origin-Resource-Policy": "same-origin"
+      }
     }
   },
   "bundle": {
@@ -39,7 +44,11 @@
       "../../crates/emmu-mesen-sys/runtime/*": "",
       "../../crates/emmu-n64/vendor/n64wasm/n64wasm.js": "wasm/n64/n64wasm.js",
       "../../crates/emmu-n64/vendor/n64wasm/n64wasm.wasm": "wasm/n64/n64wasm.wasm",
-      "../../crates/emmu-n64/vendor/n64wasm/assets.zip": "wasm/n64/assets.zip"
+      "../../crates/emmu-n64/vendor/n64wasm/assets.zip": "wasm/n64/assets.zip",
+      "../../crates/emmu-psp/vendor/ppsspp-ejs/ppsspp_libretro.js": "wasm/psp/ppsspp_libretro.js",
+      "../../crates/emmu-psp/vendor/ppsspp-ejs/ppsspp_libretro.wasm": "wasm/psp/ppsspp_libretro.wasm",
+      "../../crates/emmu-psp/vendor/ppsspp-ejs/ppsspp-assets.zip": "wasm/psp/ppsspp-assets.zip",
+      "../../crates/emmu-psp/vendor/ppsspp-ejs/license.txt": "wasm/psp/license.txt"
     },
     "iOS": {
       "minimumSystemVersion": "15.0"

@@ -15,6 +15,11 @@
 #   o módulo WASM do dust é importado pelo worker dentro do frontendDist; não
 #   há assets soltos. Apenas a licença GPL é copiada para runtime/.
 #
+# PlayStation Portable:
+#   ppsspp_libretro.js/.wasm, ppsspp-assets.zip e license.txt são servidos pelo
+#   WebView a partir de dist/wasm/psp/ e também declarados em bundle.resources.
+#   A licença GPL-2.0 do PPSSPP é copiada para runtime/ com os demais avisos.
+#
 # Uso:
 #   bash platforms/desktop/scripts/prepare-bundle.sh
 #   npm run desktop:build   # chama este script antes do cargo tauri build
@@ -103,6 +108,8 @@ cp "$ROOT_DIR/crates/emmu-gba/LICENSE-WEB-GBA-EMULATOR.txt" \
 cp "$MESEN_DIR/LICENSE-GBA-BIOS.txt"   "$RUNTIME/LICENSE-GBA-BIOS.txt"
 cp "$DESKTOP_DIR/licenses/GPL-3.0.txt" "$RUNTIME/LICENSE-GPL-3.0.txt"
 cp "$ROOT_DIR/crates/emmu-nds/vendor/dust/LICENSE" "$RUNTIME/LICENSE-DUST.txt"
+cp "$ROOT_DIR/crates/emmu-psp/vendor/ppsspp-ejs/license.txt" \
+                                        "$RUNTIME/LICENSE-PPSSPP.txt"
 cp "$DESKTOP_DIR/THIRD-PARTY-NOTICES.txt" \
                                        "$RUNTIME/THIRD-PARTY-NOTICES.txt"
 

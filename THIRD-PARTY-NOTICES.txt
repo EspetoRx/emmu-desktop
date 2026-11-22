@@ -32,6 +32,15 @@ Núcleos de emulação e bibliotecas de runtime
   Ver LICENSE-GBA-BIOS.txt.
 
 * Cores compilados dentro dos módulos WASM (sem arquivos soltos no instalador):
+
+ * PPSSPP libretro (ppsspp_libretro.js/.wasm, ppsspp-assets.zip)
+   GPL-2.0-or-later, Copyright (C) 2012-2025 PPSSPP Project / Dolphin Emulator
+   Project; avisos adicionais do PSPSDK. Ver LICENSE-PPSSPP.txt e UPSTREAM.txt
+   em crates/emmu-psp. Build EmulatorJS @emulatorjs/core-ppsspp 4.2.3,
+   RetroArch 1.21.0 + PPSSPP (2025-06-14).
+   Codigo-fonte: https://github.com/EmulatorJS/ppsspp
+   Roda na main thread do WebView com WebGL2 + pthreads + SharedArrayBuffer.
+
   - Super Sabicom (SNES) — MIT, Copyright (c) 2022 Hideyuki Tanaka
   - TetaNES (NES) — MIT OR Apache-2.0, Copyright (c) 2021 Luke Petherbridge
   - oxGBC (GB/GBC) — GPL-3.0-only, mxmgorin/oxgbc
